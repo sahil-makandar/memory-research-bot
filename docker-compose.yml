@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  research-assistant:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  streamlit:
+    build: .
+    ports:
+      - "8501:8501"
+    command: ["streamlit", "run", "ui.py", "--server.address", "0.0.0.0"]
+    depends_on:
+      - research-assistant
+    restart: unless-stopped
