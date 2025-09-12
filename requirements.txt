@@ -1,6 +1,8 @@
-fastapi
-uvicorn
-pydantic
-streamlit
-requests
-python-multipart
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+pydantic>=2.7.0
+streamlit>=1.25.0
+requests>=2.32.0
+python-multipart>=0.0.6
+pytest>=7.0.0
+pytest-asyncio>=0.21.0

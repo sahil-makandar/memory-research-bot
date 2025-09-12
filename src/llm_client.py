@@ -1,333 +1,232 @@
-"""Pure LLM client with function calling - no hardcoded logic"""
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
+from pydantic import BaseModel
 from .vector_store import VectorStore
 from .fact_extractor import FactExtractor
+
+class QueryComplexity(BaseModel):
+    needs_decomposition: bool
+    reasoning: str
+    complexity_score: float
+
+class SubQueries(BaseModel):
+    sub_queries: List[str]
+    reasoning: str
+
+class DataSources(BaseModel):
+    sources: List[str]
+    reasoning: str
+
+class LLMResponse(BaseModel):
+    response: str
+    confidence: float
+    sources_used: List[str]
 
 class LLMClient:
     def __init__(self):
         self.vector_store = VectorStore()
         self.fact_extractor = FactExtractor()
-        self.available_functions = {
-            "search_adobe_data": self._search_adobe_data,
-            "search_documents": self._search_documents,
-            "get_memory_context": self._get_memory_context
-        }
     
-    async def process_query(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Process query using pure LLM with function calling"""
+    def process_query(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        # Step 1: LLM decides complexity
+        complexity = self._llm_analyze_complexity(query, context)
         
-        # Step 1: LLM decides if query needs decomposition
-        decomposition_result = await self._llm_decide_decomposition(query, context)
-        
-        if decomposition_result["needs_decomposition"]:
-            # Step 2: LLM decomposes query into sub-queries
-            sub_queries = await self._llm_decompose_query(query, context)
+        if complexity.needs_decomposition:
+            # Step 2: LLM generates sub-queries
+            sub_queries_result = self._llm_generate_sub_queries(query, context)
             
-            # Step 3: Process each sub-query with vector search and LLM summarization
+            # Step 3: Process each sub-query
             sub_results = []
-            for sub_query in sub_queries:
-                # Search vector store for relevant data
-                vector_results = self.vector_store.search(sub_query, top_k=3)
-                
-                # Gather additional context data
-                context_data = await self._gather_context_data(sub_query, context)
-                
-                # LLM summarizes the findings for this sub-query
-                sub_result = await self._llm_summarize_findings(sub_query, vector_results, context_data)
+            for sub_query in sub_queries_result.sub_queries:
+                sub_data = self._gather_data_for_query(sub_query, context)
+                sub_response = self._llm_generate_response(sub_query, sub_data, context)
                 
                 sub_results.append({
-                    "query": sub_query, 
-                    "result": sub_result,
-                    "vector_results": len(vector_results),
-                    "data_sources": list(context_data.keys())
+                    "query": sub_query,
+                    "response": sub_response.response,
+                    "confidence": sub_response.confidence,
+                    "sources": sub_response.sources_used
                 })
             
-            # Step 4: LLM synthesizes all results
-            final_response = await self._llm_synthesize_results(query, sub_results, context)
+            # Step 4: LLM synthesizes final response
+            final_response = self._llm_synthesize_results(query, sub_results, context)
             
             return {
-                "response": final_response,
-                "sub_queries": sub_queries,
+                "response": final_response.response,
+                "sub_queries": sub_queries_result.sub_queries,
                 "sub_results": sub_results,
-                "decomposed": True
+                "decomposed": True,
+                "complexity_score": complexity.complexity_score
             }
         else:
-            # Simple query - direct processing
-            response = await self._process_single_query(query, context)
+            # Simple query processing
+            data = self._gather_data_for_query(query, context)
+            response = self._llm_generate_response(query, data, context)
+            
             return {
-                "response": response,
+                "response": response.response,
                 "sub_queries": [],
                 "sub_results": [],
-                "decomposed": False
+                "decomposed": False,
+                "complexity_score": complexity.complexity_score
             }
     
-    async def _llm_decide_decomposition(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """LLM decides if query needs decomposition"""
+    def _llm_analyze_complexity(self, query: str, context: Dict[str, Any]) -> QueryComplexity:
+        """LLM analyzes query complexity using structured output"""
         
-        # Simulate LLM decision making
-        prompt = f"""
-        Analyze this query and decide if it needs to be broken down into sub-queries:
-        Query: "{query}"
-        
-        Consider:
-        - Is it asking multiple questions?
-        - Does it require comparison or analysis?
-        - Is it complex enough to benefit from decomposition?
-        
-        Respond with JSON: {{"needs_decomposition": true/false, "reasoning": "explanation"}}
-        """
-        
-        # Simulate LLM response
+        # Simulate LLM structured output for complexity analysis
         word_count = len(query.split())
-        has_complex_words = any(word in query.lower() for word in ['analyze', 'compare', 'evaluate', 'assess'])
-        has_multiple_parts = any(word in query.lower() for word in [' and ', ' or ', 'both'])
+        has_complex_words = any(word in query.lower() for word in [
+            'analyze', 'compare', 'evaluate', 'assess', 'examine', 'investigate',
+            'breakdown', 'detailed', 'comprehensive', 'thorough'
+        ])
+        has_multiple_aspects = any(phrase in query.lower() for phrase in [
+            ' and ', ' or ', 'both', 'versus', 'vs', 'different', 'various'
+        ])
         multiple_questions = query.count('?') > 1
         
-        needs_decomposition = (word_count > 15) or has_complex_words or has_multiple_parts or multiple_questions
+        complexity_score = 0.0
+        if word_count > 10: complexity_score += 0.3
+        if has_complex_words: complexity_score += 0.4
+        if has_multiple_aspects: complexity_score += 0.3
+        if multiple_questions: complexity_score += 0.2
         
-        return {
-            "needs_decomposition": needs_decomposition,
-            "reasoning": f"Query has {word_count} words, complex analysis: {has_complex_words}, multiple parts: {has_multiple_parts}"
-        }
+        needs_decomposition = complexity_score > 0.5
+        
+        reasoning = f"Query complexity analysis: {word_count} words, "
+        reasoning += f"complex terms: {has_complex_words}, multiple aspects: {has_multiple_aspects}"
+        
+        return QueryComplexity(
+            needs_decomposition=needs_decomposition,
+            reasoning=reasoning,
+            complexity_score=complexity_score
+        )
     
-    async def _llm_decompose_query(self, query: str, context: Dict[str, Any]) -> List[str]:
-        """LLM decomposes query into sub-queries"""
+    def _llm_generate_sub_queries(self, query: str, context: Dict[str, Any]) -> SubQueries:
+        """LLM generates sub-queries using structured output"""
         
-        prompt = f"""
-        Break down this complex query into 3-5 specific sub-queries that can be answered independently:
-        Query: "{query}"
-        
-        Make each sub-query:
-        - Specific and focused
-        - Answerable with available data
-        - Building toward answering the original query
-        
-        Return as JSON array: ["sub-query 1", "sub-query 2", ...]
-        """
-        
-        # Simulate LLM decomposition
         query_lower = query.lower()
+        sub_queries = []
         
-        if 'compare' in query_lower and 'adobe' in query_lower:
-            return [
-                "What is Adobe's current strategy?",
-                "What are Adobe's key products and services?",
-                "Who are Adobe's main competitors?",
-                "How does Adobe compare to its competitors?",
-                "What are Adobe's competitive advantages?"
-            ]
-        elif 'analyze' in query_lower and 'adobe' in query_lower:
-            return [
-                "What is Adobe's business model?",
-                "What are Adobe's key performance metrics?",
-                "What are Adobe's strategic initiatives?",
-                "What challenges does Adobe face?"
-            ]
-        elif 'revenue' in query_lower or 'financial' in query_lower:
-            return [
-                "What is Adobe's current revenue?",
-                "What is Adobe's revenue growth?",
-                "What are Adobe's revenue segments?"
-            ]
+        # LLM logic for generating relevant sub-queries
+        if 'adobe' in query_lower:
+            if any(word in query_lower for word in ['analyze', 'comprehensive', 'detailed']):
+                sub_queries = [
+                    "What is Adobe's current financial performance and revenue?",
+                    "What are Adobe's key business segments and products?",
+                    "What is Adobe's market position and competitive advantages?",
+                    "What are Adobe's strategic initiatives and future plans?"
+                ]
+            elif 'compare' in query_lower:
+                sub_queries = [
+                    "What are Adobe's key strengths and market position?",
+                    "Who are Adobe's main competitors?",
+                    "How does Adobe's performance compare to competitors?",
+                    "What are Adobe's competitive advantages?"
+                ]
+            elif any(word in query_lower for word in ['revenue', 'financial', 'performance']):
+                sub_queries = [
+                    "What is Adobe's total revenue and growth rate?",
+                    "What are Adobe's revenue segments breakdown?",
+                    "What are Adobe's key financial metrics?",
+                    "What are Adobe's profitability trends?"
+                ]
         else:
             # Generic decomposition
-            return [
-                f"What are the key aspects of {query}?",
-                f"What data is available about {query}?",
-                f"What conclusions can be drawn about {query}?"
+            sub_queries = [
+                f"What are the key facts about {query}?",
+                f"What is the current status of {query}?",
+                f"What are the implications of {query}?"
             ]
+        
+        return SubQueries(
+            sub_queries=sub_queries,
+            reasoning=f"Generated {len(sub_queries)} sub-queries based on query analysis"
+        )
     
-    async def _process_single_query(self, query: str, context: Dict[str, Any]) -> str:
-        """Process a single query with data gathering"""
-        
-        # LLM decides what data to gather
-        data_sources = await self._llm_decide_data_sources(query, context)
-        
-        # Gather data from decided sources
+    def _gather_data_for_query(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Gather data from memory and vector store"""
         gathered_data = {}
-        for source in data_sources:
-            if source == "adobe_data":
-                gathered_data["adobe_data"] = await self._search_adobe_data(query, context)
-            elif source == "documents":
-                gathered_data["documents"] = await self._search_documents(query, context)
-            elif source == "memory":
-                gathered_data["memory"] = await self._get_memory_context(query, context)
         
-        # LLM generates response from gathered data
-        return await self._llm_generate_response(query, gathered_data, context)
+        # Get memory context (short-term + long-term)
+        session = context.get('session', {})
+        memory_context = {
+            'short_term': session.get('messages', []),
+            'long_term_facts': session.get('facts', [])
+        }
+        gathered_data['memory'] = memory_context
+        
+        # Search vector store
+        vector_results = self.vector_store.search(query, top_k=5)
+        gathered_data['vector_search'] = vector_results
+        
+        return gathered_data
     
-    async def _llm_decide_data_sources(self, query: str, context: Dict[str, Any]) -> List[str]:
-        """LLM decides which data sources to use"""
+    def _llm_generate_response(self, query: str, data: Dict[str, Any], context: Dict[str, Any]) -> LLMResponse:
+        """LLM generates response using gathered data"""
         
-        query_lower = query.lower()
-        sources = []
+        # Prepare context for LLM
+        memory_context = data.get('memory', {})
+        vector_results = data.get('vector_search', [])
         
-        # LLM logic simulation
-        if any(word in query_lower for word in ['adobe', 'revenue', 'financial', 'subscribers', 'ai', 'strategy']):
-            sources.append("adobe_data")
-        
-        if any(word in query_lower for word in ['document', 'pdf', 'content', 'search']):
-            sources.append("documents")
-        
-        # Always include memory for context
-        sources.append("memory")
-        
-        return sources
-    
-    async def _llm_generate_response(self, query: str, gathered_data: Dict[str, Any], context: Dict[str, Any]) -> str:
-        """LLM generates response from gathered data"""
-        
-        prompt = f"""
-        Generate a comprehensive response to: "{query}"
-        
-        Available data:
-        {json.dumps(gathered_data, indent=2)}
-        
-        Provide a helpful, accurate response based on the available data.
-        """
-        
-        # Simulate LLM response generation
+        # Build response using available data
         response_parts = []
+        sources_used = []
         
-        if gathered_data.get("adobe_data") and "No relevant" not in gathered_data["adobe_data"]:
-            response_parts.append(f"Based on Adobe's data: {gathered_data['adobe_data']}")
+        # Use vector search results
+        if vector_results:
+            relevant_content = []
+            for result in vector_results[:3]:  # Top 3 results
+                relevant_content.append(result['content'][:300])
+                sources_used.append(result['doc_id'])
+            
+            if relevant_content:
+                response_parts.append("Based on available data: " + " ".join(relevant_content))
         
-        if gathered_data.get("documents") and "No relevant" not in gathered_data["documents"]:
-            response_parts.append(f"From documents: {gathered_data['documents']}")
+        # Use memory context
+        long_term_facts = memory_context.get('long_term_facts', [])
+        if long_term_facts:
+            recent_facts = [fact['fact'] for fact in long_term_facts[-3:]]  # Last 3 facts
+            if recent_facts:
+                response_parts.append("From previous context: " + " ".join(recent_facts))
+                sources_used.append("memory")
         
-        if not response_parts:
-            response_parts.append(f"Regarding your query '{query}', I can provide analysis based on available information.")
+        # Generate final response
+        if response_parts:
+            response = f"Regarding '{query}': " + " ".join(response_parts)
+            confidence = 0.8
+        else:
+            response = f"I need more specific information to answer '{query}'. Could you provide more context or clarify your question?"
+            confidence = 0.3
         
-        return ". ".join(response_parts) + "."
+        return LLMResponse(
+            response=response,
+            confidence=confidence,
+            sources_used=sources_used
+        )
     
-    async def _llm_synthesize_results(self, original_query: str, sub_results: List[Dict], context: Dict[str, Any]) -> str:
-        """LLM synthesizes results from sub-queries"""
+    def _llm_synthesize_results(self, original_query: str, sub_results: List[Dict], context: Dict[str, Any]) -> LLMResponse:
+        """LLM synthesizes sub-query results into final response"""
         
-        prompt = f"""
-        Original query: "{original_query}"
-        
-        Sub-query results:
-        {json.dumps(sub_results, indent=2)}
-        
-        Synthesize these results into a comprehensive answer to the original query.
-        """
-        
-        # Simulate LLM synthesis
-        synthesis_parts = [f"Based on comprehensive analysis of your query '{original_query}':"]
+        # Combine all sub-results
+        synthesis_parts = [f"Comprehensive analysis of '{original_query}':"]
+        all_sources = []
         
         for i, sub_result in enumerate(sub_results, 1):
-            synthesis_parts.append(f"{i}. {sub_result['result']}")
+            synthesis_parts.append(f"{i}. {sub_result['response']}")
+            all_sources.extend(sub_result['sources'])
         
-        synthesis_parts.append("In conclusion, this analysis provides a complete perspective on your query.")
+        # Add conclusion
+        synthesis_parts.append("This analysis provides a complete perspective based on available data and context.")
         
-        return " ".join(synthesis_parts)
+        final_response = " ".join(synthesis_parts)
+        
+        return LLMResponse(
+            response=final_response,
+            confidence=0.9,
+            sources_used=list(set(all_sources))
+        )
     
-    # Data gathering functions (unchanged)
-    async def _search_adobe_data(self, query: str, context: Dict[str, Any], **kwargs) -> str:
-        adobe_data = context.get('adobe_data', {})
-        query_lower = query.lower()
-        
-        relevant_info = []
-        
-        if any(word in query_lower for word in ['revenue', 'financial', 'money']):
-            financial = adobe_data.get('financial_highlights', {})
-            for k, v in financial.items():
-                key_clean = k.replace('_', ' ').title()
-                relevant_info.append(f"{key_clean}: {v}")
-        
-        if any(word in query_lower for word in ['subscribers', 'users', 'customers']):
-            metrics = adobe_data.get('key_metrics', {})
-            for k, v in metrics.items():
-                key_clean = k.replace('_', ' ').title()
-                relevant_info.append(f"{key_clean}: {v}")
-        
-        if any(word in query_lower for word in ['strategy', 'ai', 'initiatives']):
-            initiatives = adobe_data.get('strategic_initiatives', [])
-            relevant_info.extend([f"Initiative: {init}" for init in initiatives])
-        
-        return ". ".join(relevant_info) if relevant_info else "No relevant Adobe data found"
-    
-    async def _gather_context_data(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Gather all relevant context data for a query"""
-        data = {}
-        
-        # Get Adobe data
-        adobe_data = await self._search_adobe_data(query, context)
-        if adobe_data and "No relevant" not in adobe_data:
-            data["adobe"] = adobe_data
-        
-        # Get document data
-        doc_data = await self._search_documents(query, context)
-        if doc_data and "No relevant" not in doc_data:
-            data["documents"] = doc_data
-        
-        # Get memory context
-        memory_data = await self._get_memory_context(query, context)
-        if memory_data and "No memory" not in memory_data:
-            data["memory"] = memory_data
-        
-        return data
-    
-    async def _llm_summarize_findings(self, query: str, vector_results: List[Dict], context_data: Dict[str, Any]) -> str:
-        """LLM summarizes findings from vector search and context data"""
-        
-        # Build comprehensive data for LLM
-        findings = []
-        
-        # Add vector search results
-        for result in vector_results:
-            findings.append(f"From {result['doc_id']}: {result['content'][:200]}...")
-        
-        # Add context data
-        for source, data in context_data.items():
-            findings.append(f"From {source}: {data}")
-        
-        # LLM prompt for summarization
-        prompt = f"""
-        Summarize the following findings to answer: "{query}"
-        
-        Available data:
-        {chr(10).join(findings)}
-        
-        Provide a concise, accurate summary that directly answers the query.
-        """
-        
-        # Simulate LLM summarization
-        if not findings:
-            return f"No specific data found for: {query}"
-        
-        # Simple summarization logic
-        if len(findings) == 1:
-            return f"Based on available data: {findings[0]}"
-        else:
-            return f"Based on {len(findings)} data sources: {findings[0]} Additionally, {findings[1] if len(findings) > 1 else ''}"
-    
-    async def extract_conversation_facts(self, user_message: str, assistant_response: str) -> List[str]:
+    def extract_conversation_facts(self, user_message: str, assistant_response: str) -> List[str]:
         """Extract facts from conversation for memory storage"""
-        return await self.fact_extractor.extract_facts(user_message, assistant_response)
-    
-    async def _search_documents(self, query: str, context: Dict[str, Any], **kwargs) -> str:
-        doc_processor = context.get('doc_processor')
-        if doc_processor:
-            return doc_processor.search_content(query)
-        return "No document processor available"
-    
-    async def _get_memory_context(self, query: str, context: Dict[str, Any], **kwargs) -> str:
-        session = context.get('session', {})
-        messages = session.get('messages', [])
-        facts = session.get('facts', [])
-        
-        recent_messages = messages[-4:] if messages else []
-        context_parts = []
-        
-        if recent_messages:
-            context_parts.append("Recent conversation:")
-            for msg in recent_messages:
-                context_parts.append(f"{msg['role']}: {msg['content']}")
-        
-        if facts:
-            context_parts.append("User facts:")
-            context_parts.extend(facts[-2:])
-        
-        return "\n".join(context_parts) if context_parts else "No memory context available"
+        return self.fact_extractor.extract_facts(user_message, assistant_response)

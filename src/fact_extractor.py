@@ -5,7 +5,7 @@ class FactExtractor:
     def __init__(self):
         pass
     
-    async def extract_facts(self, user_message: str, assistant_response: str) -> List[str]:
+    def extract_facts(self, user_message: str, assistant_response: str) -> List[str]:
         """Extract facts from conversation using LLM"""
         
         # LLM prompt for fact extraction
@@ -45,7 +45,7 @@ class FactExtractor:
         
         return facts
     
-    async def llm_extract_facts(self, conversation_text: str) -> List[str]:
+    def llm_extract_facts(self, conversation_text: str) -> List[str]:
         """Use LLM to extract facts from conversation"""
         
         # Simulate advanced LLM fact extraction

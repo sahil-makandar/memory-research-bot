@@ -29,7 +29,6 @@ def call_api(endpoint, method="GET", data=None, files=None):
         return None
 
 def show_thinking_process(steps, metadata):
-    """Display AI thinking process"""
     with st.expander("AI Thinking Process", expanded=False):
         st.write("**Processing Steps:**")
         for i, step in enumerate(steps, 1):
@@ -39,16 +38,35 @@ def show_thinking_process(steps, metadata):
         col1, col2 = st.columns(2)
         with col1:
             st.write(f"Complexity: {metadata.get('complexity_level')}")
-            st.write(f"Processing time: {metadata.get('processing_time')}s")
+            st.write(f"Decomposed: {metadata.get('decomposed', False)}")
         with col2:
-            st.write(f"Memory: {metadata.get('session_messages')} messages")
-            st.write(f"Facts: {metadata.get('session_facts')} stored")
+            if 'memory_stats' in metadata:
+                stats = metadata['memory_stats']
+                st.write(f"Messages: {stats.get('short_term_messages', 0)}")
+                st.write(f"Facts: {stats.get('long_term_facts', 0)}")
 
 def main():
-    st.title("Memory-Persistent Research Assistant")
+    st.title("Memory Research Assistant")
     
     # Sidebar
     with st.sidebar:
+        st.header("System")
+        
+        if st.button("Run Evaluation"):
+            with st.spinner("Running evaluation..."):
+                result = call_api("/evaluate", method="POST")
+                if result:
+                    st.success(f"Overall Score: {result['overall_score']:.2%}")
+                    for name, metrics in result['metrics'].items():
+                        st.write(f"{name}: {metrics['score']:.2%}")
+        
+        if st.button("Run Benchmark"):
+            with st.spinner("Running benchmark..."):
+                result = call_api("/benchmark", method="POST")
+                if result:
+                    st.success(f"Avg Response Time: {result['avg_response_time']:.2f}s")
+                    st.write(f"Success Rate: {result['success_rate']:.2%}")
+        
         st.header("Document Upload")
         uploaded_file = st.file_uploader("Upload PDF/TXT", type=['pdf', 'txt'])
         
@@ -60,18 +78,6 @@ def main():
                     st.success(f"Indexed: {result.get('sections')} sections")
                 else:
                     st.error("Failed to index")
-        
-        st.header("Session")
-        if 'session_id' in st.session_state and st.session_state.session_id:
-            session_info = call_api(f"/session/{st.session_state.session_id}")
-            if session_info:
-                st.write(f"Messages: {session_info['message_count']}")
-                st.write(f"Facts: {session_info['facts_count']}")
-                
-                if st.button("Clear Session"):
-                    call_api(f"/session/{st.session_state.session_id}", method="DELETE")
-                    st.session_state.clear()
-                    st.rerun()
     
     # Initialize session
     if 'messages' not in st.session_state:
@@ -89,22 +95,18 @@ def main():
     
     # Chat input
     if prompt := st.chat_input("Ask about documents or research questions..."):
-        # User message
         st.session_state.messages.append({"role": "user", "content": prompt})
         
         with st.chat_message("user"):
             st.write(prompt)
         
-        # Assistant response
         with st.chat_message("assistant"):
-            # Show real-time thinking
             thinking_container = st.container()
             response_container = st.container()
             
             with thinking_container:
                 thinking_placeholder = st.empty()
                 
-                # Simulate thinking steps
                 steps = [
                     "Analyzing query...",
                     "Checking memory...", 
@@ -119,21 +121,17 @@ def main():
                 
                 thinking_placeholder.empty()
             
-            # API call
             api_data = {"query": prompt, "session_id": st.session_state.session_id}
             response = call_api("/query", method="POST", data=api_data)
             
             if response:
-                # Update session ID
                 if not st.session_state.session_id:
                     st.session_state.session_id = response["session_id"]
                 
-                # Display response
                 with response_container:
                     st.write(response["response"])
                     show_thinking_process(response["thinking_steps"], response["metadata"])
                 
-                # Save to session
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": response["response"],
